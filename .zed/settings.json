@@ -1,0 +1,9 @@
+{
+  "lsp": {},
+  "languages": {
+    "Python": {
+      "language_servers": ["ty"],
+      "formatter": "language_server",
+    },
+  },
+}

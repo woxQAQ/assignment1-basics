@@ -1,28 +1,56 @@
 from collections import Counter
-from typing_extensions import Text, Tuple
+from io import TextIOWrapper
+from typing import BinaryIO
 import regex as re
+import multiprocessing
+from functools import partial
+
+from cs336_basics.pretokenization_example import find_chunk_boundaries
 
 
 class BPE:
     def __init__(self) -> None:
-        self.pat = re.compile(
-            r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-        )
-PAT = re.compile(
-    r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-)
-def pre_tokenize(text_block:str) -> Counter[tuple[bytes,...]]:
+        self.pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+
+PAT = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+
+def pre_tokenize(text_block: str, special_tokens: str | None = None) -> Counter[tuple[bytes, ...]]:
     c: Counter[tuple[bytes, ...]] = Counter()
-    for token in PAT.finditer(text_block):
-        c[tuple(ch.encode("utf-8") for ch in token.group())] += 1
+
+    # Split by special tokens if provided
+    if special_tokens:
+        # Escape special tokens and join with |
+        pattern = "|".join([re.escape(special_tokens)])
+        parts = [block for block in re.split(pattern, text_block) if not (block.isspace() or not block)]
+    else:
+        parts = [text_block]
+
+    # Pre-tokenize each part separately
+    for part in parts:
+        for token in PAT.finditer(part):
+            c[tuple(ch.encode("utf-8") for ch in token.group())] += 1
     return c
 
-def bpe_train(text: str, merge_times: int = 6) -> list[bytes]:
+
+def bpe_train(f: BinaryIO, merge_times: int = 6, special_tokens: str | None = None) -> list[bytes]:
     # step 0: load vocabulary
-    blocks = [b for b in text.split("<|endoftext|>") if b != ""]
+    num_processes = 4
+    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+
+    # step 1: pre-tokenization (parallelized)
+    chunks = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        chunks.append(chunk)
+
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        pre_tokenize_with_special = partial(pre_tokenize, special_tokens=special_tokens)
+        results = pool.map(pre_tokenize_with_special, chunks)
+    c = sum(results, Counter())
     voc = [b"<|endoftext|>"] + [bytes([i]) for i in range(256)]
-    # step 1: pre-tokenization
-    c = pre_tokenize(blocks[0])
     # step2: merge
     for i in range(0, merge_times):
         temp: dict[tuple[bytes, ...], int] = {}
@@ -62,7 +90,7 @@ if __name__ == "__main__":
     text = """low low low low low
 lower lower widest widest widest
 newest newest newest newest newest newest
-<|endoftext|>"""
-
-    voc = bpe_train(text)
-    print(voc)
+"""
+    with open("tests/fixtures/tinystories_sample.txt", "rb") as f:
+        voc = bpe_train(f, 100, "<|endoftext|>")
+        print(voc)
