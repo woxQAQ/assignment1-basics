@@ -1,12 +1,9 @@
-import io
 import time
 import os
 from collections import Counter
-from io import TextIOWrapper
 from typing import BinaryIO
 import regex as re
 import multiprocessing
-from functools import partial
 
 class BPE:
     def __init__(self) -> None:
@@ -35,37 +32,61 @@ def pre_tokenize(text_block: str, special_tokens: str | None = None) -> Counter[
 
 
 def bpe_train(
-    f: BinaryIO, merge_times: int = 6, special_tokens: str | None = None, parallel: bool = True
-) -> list[bytes]:
+    input_path: str, vocab_size: int, special_tokens: list[str] | None = None, parallel: bool = True
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    Train a BPE tokenizer.
+
+    Args:
+        input_path: Path to the training data text file.
+        vocab_size: Maximum vocab size (including initial bytes, merges, and special tokens).
+        special_tokens: List of special tokens to add to vocab (don't affect BPE training).
+        parallel: Whether to use parallel processing for pre-tokenization.
+
+    Returns:
+        vocab: Mapping from token ID to bytes.
+        merges: List of merge operations in order.
+    """
+    if special_tokens is None:
+        special_tokens = []
+
     # step 0: load vocabulary
     num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+    with open(input_path, "rb") as f:
+        boundaries = find_chunk_boundaries(f, num_processes, b"")
 
-    # step 1: pre-tokenization (parallelized)
-    chunks = []
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        chunks.append(chunk)
-    if not parallel:
-        results = [pre_tokenize(chunk, special_tokens=special_tokens) for chunk in chunks]
-    else:
-        with multiprocessing.Pool(processes=num_processes) as pool:
-            pre_tokenize_with_special = partial(pre_tokenize, special_tokens=special_tokens)
-            results: list[Counter[tuple[bytes, ...]]] = pool.map(pre_tokenize_with_special, chunks)
-    word_freq = sum(results, Counter())
-    voc = [b"<|endoftext|>"] + [bytes([i]) for i in range(256)]
+        # step 1: pre-tokenization (parallelized)
+        chunks = []
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            chunks.append(chunk)
+        if not parallel:
+            results = [pre_tokenize(chunk, special_tokens=None) for chunk in chunks]
+        else:
+            with multiprocessing.Pool(processes=num_processes) as pool:
+                results: list[Counter[tuple[bytes, ...]]] = pool.map(pre_tokenize, chunks)
+        word_freq = sum(results, Counter())
+
+    # Initialize vocab with 256 bytes
+    voc: list[bytes] = [bytes([i]) for i in range(256)]
+    merges: list[tuple[bytes, bytes]] = []
+
+    # Calculate number of merges needed
+    # vocab_size includes: 256 initial bytes + merges + special tokens
+    num_merges = vocab_size - 256 - len(special_tokens)
 
     # step2: merge
     start = time.time()
     # step2.1: init merge stats
     bp_counts, word_to_bytes = init_bpe_merge_stats(word_freq)
-    for it in range(0, merge_times):
+    for it in range(0, num_merges):
         # step2.2: find max byte pair
         max_count = max(bp_counts.values())
         max_byte_pair = max([byte_pair for byte_pair, count in bp_counts.items() if count == max_count])
         first, second = max_byte_pair
         voc.append(first + second)
+        merges.append((first, second))
         # 2.3 merge back to word freq
         result = Counter()
         # iterate over the word freq and found the max bp and merge them
@@ -94,7 +115,15 @@ def bpe_train(
                     i += 1
         end = time.time()
     print(f"Time taken for merge {(end - start) * 1000:.2f} milliseconds")
-    return voc
+
+    # Add special tokens to vocab
+    for token in special_tokens:
+        voc.append(token.encode("utf-8"))
+
+    # Convert list to dict with int IDs
+    vocab = {i: token for i, token in enumerate(voc)}
+
+    return vocab, merges
 
 
 def init_bpe_merge_stats(
@@ -164,8 +193,8 @@ if __name__ == "__main__":
 lower lower widest widest widest
 newest newest newest newest newest newest
 """
-    # voc = bpe_train(io.BytesIO(text.encode()), special_tokens="<|endoftext|>")
-    # print(voc)
-    with open("tests/fixtures/tinystories_sample.txt", "rb") as f:
-        voc = bpe_train(f, 100, "<|endoftext|>")
-        print(voc)
+    # Test the new signature
+    vocab, merges = bpe_train("tests/fixtures/tinystories_sample.txt", 300, ["<eos>"])
+    print(f"Vocab size: {len(vocab)}")
+    print(f"Number of merges: {len(merges)}")
+    print(f"First few merges: {merges[:5]}")
