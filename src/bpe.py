@@ -53,7 +53,8 @@ def bpe_train(
     # step 0: load vocabulary
     num_processes = 4
     with open(input_path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, num_processes, b"")
+        split_special_token = special_tokens[0].encode("utf-8") if special_tokens else b""
+        boundaries = find_chunk_boundaries(f, num_processes, split_special_token)
 
         # step 1: pre-tokenization (parallelized)
         chunks = []
@@ -61,8 +62,9 @@ def bpe_train(
             f.seek(start)
             chunk = f.read(end - start).decode("utf-8", errors="ignore")
             chunks.append(chunk)
+        tokenize_chunk = partial(pre_tokenize, special_tokens=special_tokens)
         if not parallel:
-            results = [pre_tokenize(chunk, special_tokens=None) for chunk in chunks]
+            results = [tokenize_chunk(chunk) for chunk in chunks]
         else:
             with multiprocessing.Pool(processes=num_processes) as pool:
                 results: list[Counter[tuple[bytes, ...]]] = pool.map(pre_tokenize, chunks)
