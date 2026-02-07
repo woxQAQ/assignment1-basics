@@ -4,30 +4,27 @@ from collections import Counter
 from typing import BinaryIO
 import regex as re
 import multiprocessing
-
-class BPE:
-    def __init__(self) -> None:
-        self.pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
-
+from functools import partial
 
 PAT = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 
-
-def pre_tokenize(text_block: str, special_tokens: str | None = None) -> Counter[tuple[bytes, ...]]:
+def pre_tokenize(text_block: str, special_tokens: list[str] | None = None) -> Counter[tuple[bytes, ...]]:
     c: Counter[tuple[bytes, ...]] = Counter()
 
     # Split by special tokens if provided
     if special_tokens:
-        # Escape special tokens and join with |
-        pattern = "|".join([re.escape(special_tokens)])
-        parts = [block for block in re.split(pattern, text_block) if not (block.isspace() or not block)]
+        # Longest-first alternation avoids partial matches for overlapping specials.
+        escaped_special_tokens = sorted((re.escape(t) for t in special_tokens), key=len, reverse=True)
+        pattern = "|".join(escaped_special_tokens)
+        parts = [block for block in re.split(pattern, text_block) if block]
     else:
         parts = [text_block]
 
     # Pre-tokenize each part separately
     for part in parts:
         for token in PAT.finditer(part):
-            c[tuple(ch.encode("utf-8") for ch in token.group())] += 1
+            token_bytes = token.group().encode("utf-8")
+            c[tuple(bytes([b]) for b in token_bytes)] += 1
     return c
 
 
@@ -67,7 +64,8 @@ def bpe_train(
             results = [tokenize_chunk(chunk) for chunk in chunks]
         else:
             with multiprocessing.Pool(processes=num_processes) as pool:
-                results: list[Counter[tuple[bytes, ...]]] = pool.map(pre_tokenize, chunks)
+                # Preserve special-token boundaries in each worker.
+                results = pool.map(tokenize_chunk, chunks)
         word_freq = sum(results, Counter())
 
     # Initialize vocab with 256 bytes
@@ -165,6 +163,10 @@ def find_chunk_boundaries(
     # Chunks start on previous index, don't include last index
     chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
     chunk_boundaries[-1] = file_size
+
+    # Fall back to uniform chunking when there is no split token.
+    if split_special_token == b"":
+        return chunk_boundaries
 
     mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
 
