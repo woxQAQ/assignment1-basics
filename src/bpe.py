@@ -1,3 +1,4 @@
+from pre_tokenizer import pre_tokenize
 import time
 import os
 from collections import Counter
@@ -6,30 +7,12 @@ import regex as re
 import multiprocessing
 from functools import partial
 
-PAT = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
-
-def pre_tokenize(text_block: str, special_tokens: list[str] | None = None) -> Counter[tuple[bytes, ...]]:
-    c: Counter[tuple[bytes, ...]] = Counter()
-
-    # Split by special tokens if provided
-    if special_tokens:
-        # Longest-first alternation avoids partial matches for overlapping specials.
-        escaped_special_tokens = sorted((re.escape(t) for t in special_tokens), key=len, reverse=True)
-        pattern = "|".join(escaped_special_tokens)
-        parts = [block for block in re.split(pattern, text_block) if block]
-    else:
-        parts = [text_block]
-
-    # Pre-tokenize each part separately
-    for part in parts:
-        for token in PAT.finditer(part):
-            token_bytes = token.group().encode("utf-8")
-            c[tuple(bytes([b]) for b in token_bytes)] += 1
-    return c
-
 
 def bpe_train(
-    input_path: str, vocab_size: int, special_tokens: list[str] | None = None, parallel: bool = True
+    input_path: str,
+    vocab_size: int,
+    special_tokens: list[str] | None = None,
+    parallel: bool = True,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """
     Train a BPE tokenizer.
@@ -48,18 +31,26 @@ def bpe_train(
         special_tokens = []
 
     # step 0: load vocabulary
-    num_processes = 4
+    num_processes = 8
     with open(input_path, "rb") as f:
-        split_special_token = special_tokens[0].encode("utf-8") if special_tokens else b""
-        boundaries = find_chunk_boundaries(f, num_processes, split_special_token)
+        split_special_token = (
+            special_tokens[0].encode("utf-8") if special_tokens else b""
+        )
+        boundaries = find_chunk_boundaries(
+            f, num_processes, split_special_token
+        )
 
         # step 1: pre-tokenization (parallelized)
         chunks = []
+        pre_tokenize_start = time.time()
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             f.seek(start)
             chunk = f.read(end - start).decode("utf-8", errors="ignore")
             chunks.append(chunk)
-        tokenize_chunk = partial(pre_tokenize, special_tokens=special_tokens)
+        tokenize_chunk = partial(
+            pre_tokenize,
+            special_tokens=special_tokens,
+        )
         if not parallel:
             results = [tokenize_chunk(chunk) for chunk in chunks]
         else:
@@ -67,6 +58,10 @@ def bpe_train(
                 # Preserve special-token boundaries in each worker.
                 results = pool.map(tokenize_chunk, chunks)
         word_freq = sum(results, Counter())
+        pre_tokenize_end = time.time()
+        print(
+            f"Time taken for pre_token {(pre_tokenize_end - pre_tokenize_start) * 1000:.2f} milliseconds"
+        )
 
     # Initialize vocab with 256 bytes
     voc: list[bytes] = [bytes([i]) for i in range(256)]
@@ -82,8 +77,16 @@ def bpe_train(
     bp_counts, word_to_bytes = init_bpe_merge_stats(word_freq)
     for it in range(0, num_merges):
         # step2.2: find max byte pair
+        if not bp_counts:
+            break
         max_count = max(bp_counts.values())
-        max_byte_pair = max([byte_pair for byte_pair, count in bp_counts.items() if count == max_count])
+        max_byte_pair = max(
+            [
+                byte_pair
+                for byte_pair, count in bp_counts.items()
+                if count == max_count
+            ]
+        )
         first, second = max_byte_pair
         voc.append(first + second)
         merges.append((first, second))
@@ -94,10 +97,11 @@ def bpe_train(
         for word, freq in word_freq.items():
             bytes_seq = word_to_bytes[word]
             i = 0
-            while i < len(bytes_seq) - 1:
+            seq_len = len(bytes_seq)
+            while i < seq_len - 1:
                 if (bytes_seq[i], bytes_seq[i + 1]) == max_byte_pair:
                     left = bytes_seq[i - 1] if i - 1 >= 0 else None
-                    right = bytes_seq[i + 2] if i + 2 < len(bytes_seq) else None
+                    right = bytes_seq[i + 2] if i + 2 < seq_len else None
                     if left is not None:
                         bp_counts[(left, first)] -= freq
                         if bp_counts[(left, first)] == 0:
@@ -107,6 +111,7 @@ def bpe_train(
                         if bp_counts[(second, right)] == 0:
                             del bp_counts[(second, right)]
                     bytes_seq[i : i + 2] = [first + second]
+                    seq_len -= 1
                     if left is not None:
                         bp_counts[(left, first + second)] += freq
                     if right is not None:
@@ -136,7 +141,9 @@ def init_bpe_merge_stats(
         word_to_bytes[word] = list(word)
         for b in word:
             if prev_b != b"":
-                pair_count_map[prev_b, b] = pair_count_map.get((prev_b, b), 0) + count
+                pair_count_map[prev_b, b] = (
+                    pair_count_map.get((prev_b, b), 0) + count
+                )
             prev_b = b
     return pair_count_map, word_to_bytes
 
@@ -150,7 +157,9 @@ def find_chunk_boundaries(
     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
     """
-    assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
+    assert isinstance(split_special_token, bytes), (
+        "Must represent special token as a bytestring"
+    )
 
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)
@@ -190,15 +199,3 @@ def find_chunk_boundaries(
 
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
-
-
-if __name__ == "__main__":
-    text = """low low low low low
-lower lower widest widest widest
-newest newest newest newest newest newest
-"""
-    # Test the new signature
-    vocab, merges = bpe_train("tests/fixtures/tinystories_sample.txt", 300, ["<eos>"])
-    print(f"Vocab size: {len(vocab)}")
-    print(f"Number of merges: {len(merges)}")
-    print(f"First few merges: {merges[:5]}")
