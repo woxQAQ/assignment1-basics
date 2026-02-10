@@ -6,6 +6,8 @@ data/
 # C extensions
 *.so
 
+*.prof
+
 # Distribution / packaging
 .Python
 build/
