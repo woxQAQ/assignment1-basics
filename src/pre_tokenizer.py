@@ -31,7 +31,7 @@ def pre_tokenize(
     # Pre-tokenize each part separately
     for part in parts:
         for token in PAT.finditer(part):
-            token_bytes = token.group().encode("utf-8")
+            token_bytes = token.group()
             # Use cache to avoid creating new bytes objects for each byte
             c[_bytes_to_tuple(token_bytes)] += 1
             # c[tuple(_SINGLE_BYTE_CACHE[b] for b in token_bytes)] += 1
@@ -40,5 +40,5 @@ def pre_tokenize(
 
 
 @lru_cache(maxsize=100000)
-def _bytes_to_tuple(b: bytes) -> tuple[bytes, ...]:
-    return tuple(CACHE[i] for i in b)
+def _bytes_to_tuple(b: str) -> tuple[bytes, ...]:
+    return tuple(CACHE[i] for i in b.encode("utf-8"))
