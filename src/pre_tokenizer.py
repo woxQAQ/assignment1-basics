@@ -29,16 +29,24 @@ def pre_tokenize(
         parts = [text_block]
 
     # Pre-tokenize each part separately
+    str_counter = Counter()
     for part in parts:
-        for token in PAT.finditer(part):
-            token_bytes = token.group()
-            # Use cache to avoid creating new bytes objects for each byte
-            c[_bytes_to_tuple(token_bytes)] += 1
-            # c[tuple(_SINGLE_BYTE_CACHE[b] for b in token_bytes)] += 1
+        str_counter.update(PAT.findall(part))
+        # for token in PAT.finditer(part):
+        #     str_counter[token.group()] += 1
+    for token_str, count in str_counter.items():
+        c[_str_to_tuple(token_str)] = count
+
+    # for part in parts:
+    #     for token in PAT.finditer(part):
+    #         token_bytes = token.group()
+    #         # Use cache to avoid creating new bytes objects for each byte
+    #         c[_bytes_to_tuple(token_bytes)] += 1
+    #         # c[tuple(_SINGLE_BYTE_CACHE[b] for b in token_bytes)] += 1
 
     return c
 
 
 @lru_cache(maxsize=100000)
-def _bytes_to_tuple(b: str) -> tuple[bytes, ...]:
+def _str_to_tuple(b: str) -> tuple[bytes, ...]:
     return tuple(CACHE[i] for i in b.encode("utf-8"))

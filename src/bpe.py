@@ -80,7 +80,9 @@ def pre_tokenize_file(
         split_special_token = (
             special_tokens[0].encode("utf-8") if special_tokens else b""
         )
-        boundaries = find_chunk_boundaries(f, num_processes, split_special_token)
+        boundaries = find_chunk_boundaries(
+            f, num_processes, split_special_token
+        )
 
         # Read and split into chunks
         chunks = []
@@ -97,12 +99,16 @@ def pre_tokenize_file(
             if profile_workers:
                 profiler = cProfile.Profile()
                 profiler.enable()
-                results = [pre_tokenize(chunk, special_tokens) for chunk in chunks]
+                results = [
+                    pre_tokenize(chunk, special_tokens) for chunk in chunks
+                ]
                 profiler.disable()
                 profiler.dump_stats("pre_tokenize_main.prof")
                 print(f"Profile saved to pre_tokenize_main.prof")
             else:
-                results = [pre_tokenize(chunk, special_tokens) for chunk in chunks]
+                results = [
+                    pre_tokenize(chunk, special_tokens) for chunk in chunks
+                ]
         else:
             if profile_workers:
                 # Create a queue for collecting profile file paths from workers
@@ -122,12 +128,16 @@ def pre_tokenize_file(
 
                 # After all workers complete, retrieve profile file path from queue
                 try:
-                    worker_index, temp_prof_file = profile_queue.get(timeout=5.0)
+                    worker_index, temp_prof_file = profile_queue.get(
+                        timeout=5.0
+                    )
                     # Move the temp file to the final destination
                     if os.path.exists(temp_prof_file):
                         import shutil
 
-                        shutil.move(temp_prof_file, "pre_tokenize_worker_0.prof")
+                        shutil.move(
+                            temp_prof_file, "pre_tokenize_worker_0.prof"
+                        )
                         print(f"Profile saved to pre_tokenize_worker_0.prof")
                 except Exception as e:
                     print(f"Warning: Could not retrieve profile data: {e}")
