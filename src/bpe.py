@@ -223,7 +223,7 @@ def bpe_train(
             i = 0
             seq_len = len(bytes_seq)
             while i < seq_len - 1:
-                if (bytes_seq[i], bytes_seq[i + 1]) == max_byte_pair:
+                if bytes_seq[i] == first and bytes_seq[i + 1] == second:
                     merged_any = True
                     left = bytes_seq[i - 1] if i - 1 >= 0 else None
                     right = bytes_seq[i + 2] if i + 2 < seq_len else None
