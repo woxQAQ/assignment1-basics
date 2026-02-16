@@ -204,19 +204,14 @@ def bpe_train(
         # step2.2: find max byte pair
         if not bp_counts:
             break
-        max_count = max(bp_counts.values())
-        max_byte_pair = max(
-            [
-                byte_pair
-                for byte_pair, count in bp_counts.items()
-                if count == max_count
-            ]
+        max_byte_pair, _ = max(
+            bp_counts.items(), key=lambda item: (item[1], item[0])
         )
         first, second = max_byte_pair
-        voc.append(first + second)
+        merged = first + second
+        voc.append(merged)
         merges.append((first, second))
         # 2.3 merge back to word freq
-        result = Counter()
         # iterate over the word freq and found the max bp and merge them
         del bp_counts[max_byte_pair]
         for word, freq in word_freq.items():
@@ -238,9 +233,9 @@ def bpe_train(
                     bytes_seq[i : i + 2] = [first + second]
                     seq_len -= 1
                     if left is not None:
-                        bp_counts[(left, first + second)] += freq
+                        bp_counts[(left, merged)] += freq
                     if right is not None:
-                        bp_counts[(first + second, right)] += freq
+                        bp_counts[(merged, right)] += freq
                 else:
                     i += 1
         end = time.time()

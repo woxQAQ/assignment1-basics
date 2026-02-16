@@ -3,7 +3,9 @@
   "languages": {
     "Python": {
       "language_servers": ["ty"],
-      "formatter": "language_server",
+      "formatter": {
+        "language_server": { "name": "ruff" },
+      },
     },
   },
 }

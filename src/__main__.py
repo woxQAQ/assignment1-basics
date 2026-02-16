@@ -3,17 +3,17 @@ from bpe import bpe_train, pre_tokenize_file
 
 
 def main():
-    pre_tokenize_file(
-        "data/TinyStoriesV2-GPT4-train.txt",
-        ["<|endoftext|>"],
-        parallel=True,
-        profile_workers=True,  # Enable profiling for worker processes
-    )
-    # vocab, merges = bpe_train(
+    # pre_tokenize_file(
     #     "data/TinyStoriesV2-GPT4-train.txt",
-    #     10000,
     #     ["<|endoftext|>"],
+    #     parallel=True,
+    #     profile_workers=True,  # Enable profiling for worker processes
     # )
+    vocab, merges = bpe_train(
+        "data/TinyStoriesV2-GPT4-train.txt",
+        10000,
+        ["<|endoftext|>"],
+    )
     # vocab, merges = bpe_train(
     #     "tests/fixtures/tinystories_sample.txt", 500, ["<|endoftext|>"]
     # )
