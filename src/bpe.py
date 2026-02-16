@@ -1,7 +1,7 @@
 from src.pre_tokenizer import pre_tokenize
 import time
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import BinaryIO
 import regex as re
 import multiprocessing
@@ -185,8 +185,10 @@ def bpe_train(
     if special_tokens is None:
         special_tokens = []
 
-    # step 1: pre-tokenization (parallelized)
-    word_freq = pre_tokenize_file(input_path, special_tokens, parallel)
+    # 1: pre-tokenization (parallelized)
+    pre_tokenize_results = pre_tokenize_file(
+        input_path, special_tokens, parallel
+    )
 
     # Initialize vocab with 256 bytes
     voc: list[bytes] = [bytes([i]) for i in range(256)]
@@ -194,67 +196,123 @@ def bpe_train(
 
     # Calculate number of merges needed
     # vocab_size includes: 256 initial bytes + merges + special tokens
-    num_merges = vocab_size - 256 - len(special_tokens)
+    merge_times = vocab_size - 256 - len(special_tokens)
 
-    # step2: merge
     start = time.time()
-    # step2.1: init merge stats
-    bp_counts, word_to_bytes = init_bpe_merge_stats(word_freq)
+    # 2.1: init merge stats
+    #
+    # bp_counts are the initial byte pair counts map, we use to
+    # maintain the byte pair status during whole merge procedure
+    #
+    # bp_to_words are inverted-index that map byte pairs to words id
+    # so that we can only search the affected word after we get max byte pair
+    #
+    # words_bp_seq are the list of the [real time] byte pair sequence
+    # of words, we can get sequence by id quickly.
+    #
+    # word_freq_list are the immutable list of the frequence of words,
+    # we can get freq by id quickly
+    bp_counts, bp_to_words, words_bp_sequence, word_freq_list = (
+        init_bpe_merge_stats(pre_tokenize_results)
+    )
     end = start
-    for it in range(0, num_merges):
-        # step2.2: find max byte pair
+    for it in range(0, merge_times):
+        # 2.2: find max byte pair
+        # TODO: optimize by heap
         if not bp_counts:
             break
-        max_byte_pair, max_count = max(
+        max_bp, max_bp_count = max(
             bp_counts.items(), key=lambda item: (item[1], item[0])
         )
-        if max_count <= 0:
+        if max_bp_count <= 0:
             break
-        first, second = max_byte_pair
+        first, second = max_bp
         merged = first + second
         # 2.3 merge back to word freq
-        # iterate over the word freq and found the max bp and merge them.
-        # Apply pair-count updates in batch to avoid inconsistent intermediate
-        # states when overlaps (e.g. "AAA" with pair "AA") are present.
-        delta_bp_counts: Counter[tuple[bytes, bytes]] = Counter()
+        # Only words containing max_byte_pair can change.
+        affected = bp_to_words.get(max_bp)
+        if not affected:
+            bp_counts.pop(max_bp, None)
+            bp_to_words.pop(max_bp, None)
+            continue
+
         merged_any = False
-        for word, freq in word_freq.items():
-            bytes_seq = word_to_bytes[word]
+        for wid in list(affected):
+            old_seq = words_bp_sequence[wid]
+            freq = word_freq_list[wid]
+
+            # 2.3.1 get the old word byte pair sequence
+            old_bp_seq = Counter(zip(old_seq, old_seq[1:]))
+
             i = 0
-            seq_len = len(bytes_seq)
-            while i < seq_len - 1:
-                if bytes_seq[i] == first and bytes_seq[i + 1] == second:
-                    merged_any = True
-                    left = bytes_seq[i - 1] if i - 1 >= 0 else None
-                    right = bytes_seq[i + 2] if i + 2 < seq_len else None
-                    delta_bp_counts[max_byte_pair] -= freq
-                    if left is not None:
-                        delta_bp_counts[(left, first)] -= freq
-                    if right is not None:
-                        delta_bp_counts[(second, right)] -= freq
-                    bytes_seq[i : i + 2] = [merged]
-                    seq_len -= 1
-                    if left is not None:
-                        delta_bp_counts[(left, merged)] += freq
-                    if right is not None:
-                        delta_bp_counts[(merged, right)] += freq
+            seq_len = len(old_seq)
+
+            # new_seq are the merged version of byte_seq
+            new_seq: list[bytes] = []
+            # flag to indicate there is merged happended
+            local_merged = False
+            # 2.3.2 find all target(merged) pair in the bp sequence
+            while i < seq_len:
+                if (
+                    i + 1 < seq_len
+                    and old_seq[i] == first
+                    and old_seq[i + 1] == second
+                ):
+                    new_seq.append(merged)
+                    i += 2
+                    local_merged = True
                 else:
+                    new_seq.append(old_seq[i])
                     i += 1
 
+            # no merge happens, fast path
+            if not local_merged:
+                # If the inverted index entry is stale, remove it.
+                stale = bp_to_words.get(max_bp)
+                if stale is not None:
+                    stale.discard(wid)
+                    if not stale:
+                        bp_to_words.pop(max_bp, None)
+                continue
+
+            merged_any = True
+            # new_pairs is the merged version of old_bp_seq
+            # after merge
+            new_bp_seq = Counter(zip(new_seq, new_seq[1:]))
+
+            # update the bp counter
+            for pair, count in old_bp_seq.items():
+                new_count = bp_counts.get(pair, 0) - count * freq
+                if new_count > 0:
+                    bp_counts[pair] = new_count
+                else:
+                    bp_counts.pop(pair, None)
+
+            for pair, count in new_bp_seq.items():
+                bp_counts[pair] = bp_counts.get(pair, 0) + count * freq
+
+            # update inverted indexes
+            old_bp_set = set(old_bp_seq)
+            new_bp_set = set(new_bp_seq)
+            for pair in old_bp_set - new_bp_set:
+                words = bp_to_words.get(pair)
+                if words is not None:
+                    words.discard(wid)
+                    if not words:
+                        bp_to_words.pop(pair, None)
+            for pair in new_bp_set - old_bp_set:
+                bp_to_words[pair].add(wid)
+
+            # update word
+            words_bp_sequence[wid] = new_seq
+
         if not merged_any:
-            del bp_counts[max_byte_pair]
+            bp_counts.pop(max_bp, None)
+            bp_to_words.pop(max_bp, None)
             continue
 
         voc.append(merged)
         merges.append((first, second))
-        for pair, delta in delta_bp_counts.items():
-            if delta == 0:
-                continue
-            new_count = bp_counts.get(pair, 0) + delta
-            if new_count > 0:
-                bp_counts[pair] = new_count
-            elif pair in bp_counts:
-                del bp_counts[pair]
         end = time.time()
     print(f"Time taken for merge {(end - start) * 1000:.2f} milliseconds")
 
@@ -270,19 +328,25 @@ def bpe_train(
 
 def init_bpe_merge_stats(
     word_freq: Counter[tuple[bytes, ...]],
-) -> tuple[Counter[tuple[bytes, ...]], dict[tuple[bytes, ...], list[bytes]]]:
-    pair_count_map: Counter[tuple[bytes, ...]] = Counter()
-    word_to_bytes: dict[tuple[bytes, ...], list[bytes]] = {}
-    for word, count in word_freq.items():
-        prev_b = b""
-        word_to_bytes[word] = list(word)
-        for b in word:
-            if prev_b != b"":
-                pair_count_map[prev_b, b] = (
-                    pair_count_map.get((prev_b, b), 0) + count
-                )
-            prev_b = b
-    return pair_count_map, word_to_bytes
+) -> tuple[
+    Counter[tuple[bytes, ...]],
+    dict[tuple[bytes, ...], set[int]],
+    list[list[bytes]],
+    list[int],
+]:
+    bp_counts: Counter[tuple[bytes, ...]] = Counter()
+    bp_to_words: dict[tuple[bytes, ...], set[int]] = defaultdict(set)
+    words_bp_sequence: list[list[bytes]] = []
+    word_freq_list: list[int] = []
+    for wid, (word, freq) in enumerate(word_freq.items()):
+        bp_sequences = list(word)
+        words_bp_sequence.append(bp_sequences)
+        word_freq_list.append(freq)
+        for i in range(len(bp_sequences) - 1):
+            p = (bp_sequences[i], bp_sequences[i + 1])
+            bp_counts[p] += freq
+            bp_to_words[p].add(wid)
+    return bp_counts, bp_to_words, words_bp_sequence, word_freq_list
 
 
 def find_chunk_boundaries(
