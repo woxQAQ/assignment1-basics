@@ -200,44 +200,61 @@ def bpe_train(
     start = time.time()
     # step2.1: init merge stats
     bp_counts, word_to_bytes = init_bpe_merge_stats(word_freq)
+    end = start
     for it in range(0, num_merges):
         # step2.2: find max byte pair
         if not bp_counts:
             break
-        max_byte_pair, _ = max(
+        max_byte_pair, max_count = max(
             bp_counts.items(), key=lambda item: (item[1], item[0])
         )
+        if max_count <= 0:
+            break
         first, second = max_byte_pair
         merged = first + second
-        voc.append(merged)
-        merges.append((first, second))
         # 2.3 merge back to word freq
-        # iterate over the word freq and found the max bp and merge them
-        del bp_counts[max_byte_pair]
+        # iterate over the word freq and found the max bp and merge them.
+        # Apply pair-count updates in batch to avoid inconsistent intermediate
+        # states when overlaps (e.g. "AAA" with pair "AA") are present.
+        delta_bp_counts: Counter[tuple[bytes, bytes]] = Counter()
+        merged_any = False
         for word, freq in word_freq.items():
             bytes_seq = word_to_bytes[word]
             i = 0
             seq_len = len(bytes_seq)
             while i < seq_len - 1:
                 if (bytes_seq[i], bytes_seq[i + 1]) == max_byte_pair:
+                    merged_any = True
                     left = bytes_seq[i - 1] if i - 1 >= 0 else None
                     right = bytes_seq[i + 2] if i + 2 < seq_len else None
+                    delta_bp_counts[max_byte_pair] -= freq
                     if left is not None:
-                        bp_counts[(left, first)] -= freq
-                        if bp_counts[(left, first)] == 0:
-                            del bp_counts[(left, first)]
+                        delta_bp_counts[(left, first)] -= freq
                     if right is not None:
-                        bp_counts[(second, right)] -= freq
-                        if bp_counts[(second, right)] == 0:
-                            del bp_counts[(second, right)]
-                    bytes_seq[i : i + 2] = [first + second]
+                        delta_bp_counts[(second, right)] -= freq
+                    bytes_seq[i : i + 2] = [merged]
                     seq_len -= 1
                     if left is not None:
-                        bp_counts[(left, merged)] += freq
+                        delta_bp_counts[(left, merged)] += freq
                     if right is not None:
-                        bp_counts[(merged, right)] += freq
+                        delta_bp_counts[(merged, right)] += freq
                 else:
                     i += 1
+
+        if not merged_any:
+            del bp_counts[max_byte_pair]
+            continue
+
+        voc.append(merged)
+        merges.append((first, second))
+        for pair, delta in delta_bp_counts.items():
+            if delta == 0:
+                continue
+            new_count = bp_counts.get(pair, 0) + delta
+            if new_count > 0:
+                bp_counts[pair] = new_count
+            elif pair in bp_counts:
+                del bp_counts[pair]
         end = time.time()
     print(f"Time taken for merge {(end - start) * 1000:.2f} milliseconds")
 
