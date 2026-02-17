@@ -1,5 +1,5 @@
 from pre_tokenizer import pre_tokenize
-from bpe import bpe_train, pre_tokenize_file
+from bpe_train import bpe_train, pre_tokenize_file
 
 
 def main():

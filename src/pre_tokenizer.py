@@ -1,6 +1,5 @@
 from functools import lru_cache
 import regex as re
-import numpy as np
 from collections import Counter
 
 PAT = re.compile(
