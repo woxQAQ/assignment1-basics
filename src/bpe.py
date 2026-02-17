@@ -19,23 +19,33 @@ def _init_worker(queue: "multiprocessing.Queue | None") -> None:
     _profile_queue = queue
 
 
-def _tokenize_chunk_with_index(
-    index_chunk: tuple[int, str],
+def _read_chunk(input_path: str, start: int, end: int) -> str:
+    """Read and decode a file slice [start, end)."""
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        return f.read(end - start).decode("utf-8", errors="ignore")
+
+
+def _tokenize_range_with_index(
+    index_range: tuple[int, int, int],
+    input_path: str,
     special_tokens: list[str] | None,
 ) -> Counter[tuple[bytes, ...]]:
     """
-    Worker function that processes a chunk with its index.
+    Worker function that processes a byte-range with its index.
     Only index 0 will be profiled if profile_queue is provided.
 
     Args:
-        index_chunk: Tuple of (chunk_index, chunk_data)
+        index_range: Tuple of (chunk_index, start, end)
+        input_path: Training data path
         special_tokens: List of special tokens
 
     Returns:
         Counter of token frequencies
     """
     global _profile_queue
-    index, chunk = index_chunk
+    index, start, end = index_range
+    chunk = _read_chunk(input_path, start, end)
 
     # Only profile the first chunk (index 0)
     if index == 0 and _profile_queue is not None:
@@ -85,87 +95,84 @@ def pre_tokenize_file(
             f, num_processes, split_special_token
         )
 
-        # Read and split into chunks
-        chunks = []
-        pre_tokenize_start = time.time()
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            chunks.append(chunk)
+    indexed_ranges = [
+        (idx, start, end)
+        for idx, (start, end) in enumerate(
+            zip(boundaries[:-1], boundaries[1:])
+        )
+    ]
 
-        # Enumerate chunks to track index for profiling
-        indexed_chunks = list(enumerate(chunks))
-
-        if not parallel:
-            if profile_workers:
-                profiler = cProfile.Profile()
-                profiler.enable()
-                results = [
-                    pre_tokenize(chunk, special_tokens) for chunk in chunks
-                ]
-                profiler.disable()
-                profiler.dump_stats("pre_tokenize_main.prof")
-                print(f"Profile saved to pre_tokenize_main.prof")
-            else:
-                results = [
-                    pre_tokenize(chunk, special_tokens) for chunk in chunks
-                ]
+    pre_tokenize_start = time.time()
+    if not parallel:
+        if profile_workers:
+            profiler = cProfile.Profile()
+            profiler.enable()
+            results = [
+                pre_tokenize(_read_chunk(input_path, start, end), special_tokens)
+                for _, start, end in indexed_ranges
+            ]
+            profiler.disable()
+            profiler.dump_stats("pre_tokenize_main.prof")
+            print(f"Profile saved to pre_tokenize_main.prof")
         else:
-            if profile_workers:
-                # Create a queue for collecting profile file paths from workers
-                profile_queue: "multiprocessing.Queue" = multiprocessing.Queue()
+            results = [
+                pre_tokenize(_read_chunk(input_path, start, end), special_tokens)
+                for _, start, end in indexed_ranges
+            ]
+    else:
+        if profile_workers:
+            # Create a queue for collecting profile file paths from workers
+            profile_queue: "multiprocessing.Queue" = multiprocessing.Queue()
 
-                # Use Pool with initializer to share queue with workers
-                with multiprocessing.Pool(
-                    processes=num_processes,
-                    initializer=_init_worker,
-                    initargs=(profile_queue,),
-                ) as pool:
-                    worker_func = partial(
-                        _tokenize_chunk_with_index,
-                        special_tokens=special_tokens,
-                    )
-                    results = pool.map(worker_func, indexed_chunks)
-
-                # After all workers complete, retrieve profile file path from queue
-                try:
-                    worker_index, temp_prof_file = profile_queue.get(
-                        timeout=5.0
-                    )
-                    # Move the temp file to the final destination
-                    if os.path.exists(temp_prof_file):
-                        import shutil
-
-                        shutil.move(
-                            temp_prof_file, "pre_tokenize_worker_0.prof"
-                        )
-                        print(f"Profile saved to pre_tokenize_worker_0.prof")
-                except Exception as e:
-                    print(f"Warning: Could not retrieve profile data: {e}")
-            else:
-                # No profiling - simple parallel map
+            # Use Pool with initializer to share queue with workers
+            with multiprocessing.Pool(
+                processes=num_processes,
+                initializer=_init_worker,
+                initargs=(profile_queue,),
+            ) as pool:
                 worker_func = partial(
-                    _tokenize_chunk_with_index,
+                    _tokenize_range_with_index,
+                    input_path=input_path,
                     special_tokens=special_tokens,
                 )
-                with multiprocessing.Pool(
-                    processes=num_processes,
-                    initializer=_init_worker,
-                    initargs=(None,),
-                ) as pool:
-                    results = pool.map(worker_func, indexed_chunks)
-        # we don't get word freq map like this:
-        # word_freq = sum(results, Counter())
-        # because it will create new objects and do copy
-        # we can get 30% performance improvements
-        # by revamp it to iter over results like below:
-        word_freq = Counter()
-        for r in results:
-            word_freq.update(r)
-        pre_tokenize_end = time.time()
-        print(
-            f"Time taken for pre_token {(pre_tokenize_end - pre_tokenize_start) * 1000:.2f} milliseconds"
-        )
+                results = pool.map(worker_func, indexed_ranges)
+
+            # After all workers complete, retrieve profile file path from queue
+            try:
+                worker_index, temp_prof_file = profile_queue.get(timeout=5.0)
+                # Move the temp file to the final destination
+                if os.path.exists(temp_prof_file):
+                    import shutil
+
+                    shutil.move(temp_prof_file, "pre_tokenize_worker_0.prof")
+                    print(f"Profile saved to pre_tokenize_worker_0.prof")
+            except Exception as e:
+                print(f"Warning: Could not retrieve profile data: {e}")
+        else:
+            # No profiling - simple parallel map
+            worker_func = partial(
+                _tokenize_range_with_index,
+                input_path=input_path,
+                special_tokens=special_tokens,
+            )
+            with multiprocessing.Pool(
+                processes=num_processes,
+                initializer=_init_worker,
+                initargs=(None,),
+            ) as pool:
+                results = pool.map(worker_func, indexed_ranges)
+    # we don't get word freq map like this:
+    # word_freq = sum(results, Counter())
+    # because it will create new objects and do copy
+    # we can get 30% performance improvements
+    # by revamp it to iter over results like below:
+    word_freq = Counter()
+    for r in results:
+        word_freq.update(r)
+    pre_tokenize_end = time.time()
+    print(
+        f"Time taken for pre_token {(pre_tokenize_end - pre_tokenize_start) * 1000:.2f} milliseconds"
+    )
 
     return word_freq
 
