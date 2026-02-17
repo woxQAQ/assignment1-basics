@@ -1,3 +1,4 @@
+import heapq
 from src.pre_tokenizer import pre_tokenize
 import time
 import os
@@ -5,7 +6,7 @@ from collections import Counter, defaultdict
 from typing import BinaryIO
 import regex as re
 import multiprocessing
-from functools import partial
+from functools import partial, total_ordering
 import cProfile
 
 # Global variable for profile queue, initialized via pool initializer
@@ -163,6 +164,35 @@ def pre_tokenize_file(
     return word_freq
 
 
+@total_ordering
+class RevPair:
+    __slots__ = ("pair",)
+
+    def __init__(self, pair):
+        self.pair = pair
+
+    def __lt__(self, other):
+        return self.pair > other.pair
+
+    def __eq__(self, other):
+        return self.pair == other.pair
+
+
+def push_pair(heap, bp_counts, pair):
+    cnt = bp_counts.get(pair)
+    if cnt and cnt > 0:
+        heapq.heappush(heap, (-cnt, RevPair(pair), pair))
+
+
+def pop_best_pair(heap, bp_counts):
+    while heap:
+        neg_cnt, _, pair = heapq.heappop(heap)
+        cnt = -neg_cnt
+        if bp_counts.get(pair) == cnt:
+            return pair, cnt
+    return None, 0
+
+
 def bpe_train(
     input_path: str,
     vocab_size: int,
@@ -215,15 +245,15 @@ def bpe_train(
     bp_counts, bp_to_words, words_bp_sequence, word_freq_list = (
         init_bpe_merge_stats(pre_tokenize_results)
     )
+    heap = []
+    for bp in bp_counts:
+        push_pair(heap, bp_counts, bp)
     end = start
     for it in range(0, merge_times):
         # 2.2: find max byte pair
-        # TODO: optimize by heap
-        if not bp_counts:
+        max_bp, max_bp_count = pop_best_pair(heap, bp_counts)
+        if max_bp is None:
             break
-        max_bp, max_bp_count = max(
-            bp_counts.items(), key=lambda item: (item[1], item[0])
-        )
         if max_bp_count <= 0:
             break
         first, second = max_bp
@@ -264,7 +294,6 @@ def bpe_train(
                 else:
                     new_seq.append(old_seq[i])
                     i += 1
-
             # no merge happens, fast path
             if not local_merged:
                 # If the inverted index entry is stale, remove it.
@@ -285,11 +314,13 @@ def bpe_train(
                 new_count = bp_counts.get(pair, 0) - count * freq
                 if new_count > 0:
                     bp_counts[pair] = new_count
+                    push_pair(heap, bp_counts, pair)
                 else:
                     bp_counts.pop(pair, None)
 
             for pair, count in new_bp_seq.items():
                 bp_counts[pair] = bp_counts.get(pair, 0) + count * freq
+                push_pair(heap, bp_counts, pair)
 
             # update inverted indexes
             old_bp_set = set(old_bp_seq)
@@ -313,6 +344,10 @@ def bpe_train(
 
         voc.append(merged)
         merges.append((first, second))
+        if len(heap) > 4 * max(len(bp_counts), 1):
+            heap = []
+            for bp in bp_counts:
+                push_pair(heap, bp_counts, bp)
         end = time.time()
     print(f"Time taken for merge {(end - start) * 1000:.2f} milliseconds")
 
