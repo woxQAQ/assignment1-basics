@@ -97,9 +97,7 @@ def pre_tokenize_file(
 
     indexed_ranges = [
         (idx, start, end)
-        for idx, (start, end) in enumerate(
-            zip(boundaries[:-1], boundaries[1:])
-        )
+        for idx, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:]))
     ]
 
     pre_tokenize_start = time.time()
