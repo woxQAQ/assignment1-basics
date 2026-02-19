@@ -1,6 +1,7 @@
 from pre_tokenizer import PAT
 from collections.abc import Iterable, Iterator
 import regex as re
+import json
 
 _BYTE_CACHE = tuple(bytes([i]) for i in range(256))
 
@@ -30,7 +31,47 @@ class Tokenizer:
         merges_filepath: str,
         special_tokens: list[str] | None = None,
     ) -> "Tokenizer":
-        pass
+        try:
+            from src.utils import gpt2_bytes_to_unicode
+        except ImportError:
+            from utils import gpt2_bytes_to_unicode
+
+        byte_decoder = {v: k for k, v in gpt2_bytes_to_unicode().items()}
+
+        with open(vocab_filepath, encoding="utf-8") as vf:
+            serialized_vocab: dict[str, int] = json.load(vf)
+
+        vocab: dict[int, bytes] = {
+            token_id: bytes(byte_decoder[ch] for ch in token_str)
+            for token_str, token_id in serialized_vocab.items()
+        }
+
+        merges: list[tuple[bytes, bytes]] = []
+        with open(merges_filepath, encoding="utf-8") as mf:
+            for line in mf:
+                cleaned = line.rstrip("\n")
+                parts = cleaned.split(" ")
+                if len(parts) != 2:
+                    continue
+                left_str, right_str = parts
+                merges.append(
+                    (
+                        bytes(byte_decoder[ch] for ch in left_str),
+                        bytes(byte_decoder[ch] for ch in right_str),
+                    )
+                )
+
+        if special_tokens:
+            existing_tokens = set(vocab.values())
+            next_id = max(vocab.keys(), default=-1) + 1
+            for token in special_tokens:
+                token_bytes = token.encode("utf-8")
+                if token_bytes not in existing_tokens:
+                    vocab[next_id] = token_bytes
+                    existing_tokens.add(token_bytes)
+                    next_id += 1
+
+        return cls(vocab, merges, special_tokens=special_tokens)
 
     def _pre_tokenize(self, text: str) -> list[str]:
         """Split text into pre-tokens while preserving configured special tokens."""
@@ -108,17 +149,52 @@ class Tokenizer:
         special_tokens = set(self.special_tokens or [])
 
         for token in self._pre_tokenize(text):
-            if token in special_tokens:
-                ids.append(self.token_ids[token.encode("utf-8")])
-                continue
-
-            merged_symbols = self._merge_pretoken(token)
-            ids.extend(self.token_ids[symbol] for symbol in merged_symbols)
+            ids.extend(self._encode_token(token, special_tokens))
 
         return ids
 
+    def _encode_token(self, token: str, special_tokens: set[str]) -> list[int]:
+        if token in special_tokens:
+            return [self.token_ids[token.encode("utf-8")]]
+        merged_symbols = self._merge_pretoken(token)
+        return [self.token_ids[symbol] for symbol in merged_symbols]
+
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        pass
+        special_tokens = set(self.special_tokens or [])
+        max_special_len = max((len(t) for t in special_tokens), default=0)
+        pending = ""
+
+        for chunk in iterable:
+            if not chunk:
+                continue
+            pending += chunk
+
+            # Keep a suffix that could be the prefix of a special token crossing
+            # chunk boundaries.
+            if max_special_len > 1:
+                protect_len = max_special_len - 1
+                if len(pending) <= protect_len:
+                    continue
+                protected_suffix = pending[-protect_len:]
+                process_text = pending[:-protect_len]
+            else:
+                protected_suffix = ""
+                process_text = pending
+
+            pre_tokens = self._pre_tokenize(process_text)
+            if not pre_tokens:
+                pending = protected_suffix
+                continue
+
+            for token in pre_tokens[:-1]:
+                yield from self._encode_token(token, special_tokens)
+
+            # Keep the final token un-emitted; it may extend with next chunk.
+            pending = pre_tokens[-1] + protected_suffix
+
+        if pending:
+            for token in self._pre_tokenize(pending):
+                yield from self._encode_token(token, special_tokens)
 
     def decode(self, ids: list[int]) -> str:
         token_bytes = bytearray()
