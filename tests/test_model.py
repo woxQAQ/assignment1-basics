@@ -29,7 +29,9 @@ def test_linear(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
     numpy_snapshot.assert_match(output)
 
 
-def test_embedding(numpy_snapshot, ts_state_dict, in_indices, vocab_size, d_model):
+def test_embedding(
+    numpy_snapshot, ts_state_dict, in_indices, vocab_size, d_model
+):
     embedding_weight = ts_state_dict[0]["token_embeddings.weight"]
     output = run_embedding(
         vocab_size=vocab_size,
@@ -70,7 +72,9 @@ def test_4d_scaled_dot_product_attention(numpy_snapshot, q, k, v, mask):
         rearrange(x, "(batch head) seq d -> batch head seq d", head=2)
         for x in (q, k, v)
     )
-    mask = rearrange(mask, "(batch head) query key -> batch head query key", head=2)
+    mask = rearrange(
+        mask, "(batch head) query key -> batch head query key", head=2
+    )
 
     actual_output = run_scaled_dot_product_attention(Q=q, K=k, V=v, mask=mask)
     numpy_snapshot.assert_match(
@@ -188,7 +192,14 @@ def test_transformer_lm_truncated_input(
 
 
 def test_transformer_block(
-    numpy_snapshot, ts_state_dict, in_embeddings, d_model, n_heads, d_ff, n_keys, theta
+    numpy_snapshot,
+    ts_state_dict,
+    in_embeddings,
+    d_model,
+    n_heads,
+    d_ff,
+    n_keys,
+    theta,
 ):
     block_weights = {
         k.replace("layers.0.", ""): v
@@ -217,13 +228,18 @@ def test_rmsnorm(numpy_snapshot, ts_state_dict, in_embeddings):
     d_model = reference_weights.shape[0]
 
     actual_output = run_rmsnorm(
-        d_model=d_model, eps=1e-5, weights=reference_weights, in_features=in_embeddings
+        d_model=d_model,
+        eps=1e-5,
+        weights=reference_weights,
+        in_features=in_embeddings,
     )
 
     numpy_snapshot.assert_match(actual_output, atol=1e-6)
 
 
-def test_rope(numpy_snapshot, in_embeddings, d_model, theta, n_queries, pos_ids):
+def test_rope(
+    numpy_snapshot, in_embeddings, d_model, theta, n_queries, pos_ids
+):
     output = run_rope(
         d_model,
         theta=theta,
@@ -244,5 +260,7 @@ def test_silu_matches_pytorch():
     expected_output = F.silu(x)
     actual_output = run_silu(x)
     numpy.testing.assert_allclose(
-        actual_output.detach().numpy(), expected_output.detach().numpy(), atol=1e-6
+        actual_output.detach().numpy(),
+        expected_output.detach().numpy(),
+        atol=1e-6,
     )

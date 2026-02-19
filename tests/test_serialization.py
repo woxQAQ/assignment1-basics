@@ -28,7 +28,10 @@ def are_optimizers_equal(
         return False
 
     # Check parameter groups are identical
-    if optimizer1_state_dict["param_groups"] != optimizer2_state_dict["param_groups"]:
+    if (
+        optimizer1_state_dict["param_groups"]
+        != optimizer2_state_dict["param_groups"]
+    ):
         return False
 
     # Check states
@@ -113,7 +116,9 @@ def test_checkpointing(tmp_path):
 
     # Check that state dict keys match
     assert set(original_model_state.keys()) == set(new_model_state.keys())
-    assert set(original_optimizer_state.keys()) == set(new_optimizer_state.keys())
+    assert set(original_optimizer_state.keys()) == set(
+        new_optimizer_state.keys()
+    )
 
     # compare the model state dicts
     for key in original_model_state.keys():

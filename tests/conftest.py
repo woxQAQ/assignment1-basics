@@ -62,16 +62,18 @@ class NumpySnapshot:
         if self.always_match_exact:
             rtol = atol = 0
         if test_name is DEFAULT:
-            assert (
-                self.default_test_name is not None
-            ), "Test name must be provided or set as default"
+            assert self.default_test_name is not None, (
+                "Test name must be provided or set as default"
+            )
             test_name = self.default_test_name
 
         snapshot_path = self._get_snapshot_path(test_name)
 
         # Convert single array to dictionary for consistent handling
         arrays_dict = actual if isinstance(actual, dict) else {"array": actual}
-        arrays_dict = {k: _canonicalize_array(v) for k, v in arrays_dict.items()}
+        arrays_dict = {
+            k: _canonicalize_array(v) for k, v in arrays_dict.items()
+        }
 
         # Load the snapshot
         expected_arrays = dict(np.load(snapshot_path))
@@ -136,9 +138,9 @@ class Snapshot:
         if force_update is DEFAULT:
             force_update = self.default_force_update
         if test_name is DEFAULT:
-            assert (
-                self.default_test_name is not None
-            ), "Test name must be provided or set as default"
+            assert self.default_test_name is not None, (
+                "Test name must be provided or set as default"
+            )
             test_name = self.default_test_name
 
         snapshot_path = self._get_snapshot_path(test_name)
@@ -153,13 +155,13 @@ class Snapshot:
                     raise AssertionError(
                         f"Key '{key}' not found in snapshot for {test_name}"
                     )
-                assert (
-                    actual[key] == expected_data[key]
-                ), f"Data for key '{key}' does not match snapshot for {test_name}"
+                assert actual[key] == expected_data[key], (
+                    f"Data for key '{key}' does not match snapshot for {test_name}"
+                )
         else:
-            assert (
-                actual == expected_data
-            ), f"Data does not match snapshot for {test_name}"
+            assert actual == expected_data, (
+                f"Data does not match snapshot for {test_name}"
+            )
 
 
 @pytest.fixture
@@ -212,7 +214,9 @@ def ts_state_dict(request):
     from .common import FIXTURES_PATH
     import json
 
-    state_dict = torch.load(FIXTURES_PATH / "ts_tests" / "model.pt", map_location="cpu")
+    state_dict = torch.load(
+        FIXTURES_PATH / "ts_tests" / "model.pt", map_location="cpu"
+    )
     config = json.load(open(FIXTURES_PATH / "ts_tests" / "model_config.json"))
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
     return state_dict, config

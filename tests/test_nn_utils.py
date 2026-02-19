@@ -16,7 +16,9 @@ def test_softmax_matches_pytorch():
     )
     expected = F.softmax(x, dim=-1)
     numpy.testing.assert_allclose(
-        run_softmax(x, dim=-1).detach().numpy(), expected.detach().numpy(), atol=1e-6
+        run_softmax(x, dim=-1).detach().numpy(),
+        expected.detach().numpy(),
+        atol=1e-6,
     )
     # Test that softmax handles numerical overflow issues
     numpy.testing.assert_allclose(
@@ -44,7 +46,9 @@ def test_cross_entropy():
         ]
     )
     targets = torch.tensor([[1, 0, 2, 2], [4, 1, 4, 0]])
-    expected = F.cross_entropy(inputs.view(-1, inputs.size(-1)), targets.view(-1))
+    expected = F.cross_entropy(
+        inputs.view(-1, inputs.size(-1)), targets.view(-1)
+    )
     numpy.testing.assert_allclose(
         run_cross_entropy(inputs.view(-1, inputs.size(-1)), targets.view(-1))
         .detach()
