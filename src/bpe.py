@@ -1,4 +1,4 @@
-from pre_tokenizer import PAT
+from src.pre_tokenizer import PAT
 from collections.abc import Iterable, Iterator
 import regex as re
 import json
@@ -75,11 +75,20 @@ class Tokenizer:
 
     def _pre_tokenize(self, text: str) -> list[str]:
         """Split text into pre-tokens while preserving configured special tokens."""
+        return [token for token, _, _ in self._pre_tokenize_with_spans(text)]
+
+    def _pre_tokenize_with_spans(
+        self, text: str
+    ) -> list[tuple[str, int, int]]:
+        """Split text into pre-tokens and return (token, start, end) spans."""
         if not text:
             return []
 
         if not self.special_tokens:
-            return PAT.findall(text)
+            return [
+                (match.group(0), match.start(), match.end())
+                for match in PAT.finditer(text)
+            ]
 
         # Longest-first alternation avoids partial matches for overlapping specials.
         escaped_special_tokens = sorted(
@@ -87,19 +96,41 @@ class Tokenizer:
             key=len,
             reverse=True,
         )
-        pattern = "|".join(escaped_special_tokens)
-        # Capture group keeps matched special tokens in the split output.
-        parts = re.split(f"({pattern})", text)
+        special_pattern = re.compile("|".join(escaped_special_tokens))
+        result: list[tuple[str, int, int]] = []
+        cursor = 0
 
-        specials = set(self.special_tokens)
-        result: list[str] = []
-        for part in parts:
-            if not part:
-                continue
-            if part in specials:
-                result.append(part)
-            else:
-                result.extend(PAT.findall(part))
+        for special_match in special_pattern.finditer(text):
+            if cursor < special_match.start():
+                segment = text[cursor : special_match.start()]
+                for token_match in PAT.finditer(segment):
+                    result.append(
+                        (
+                            token_match.group(0),
+                            cursor + token_match.start(),
+                            cursor + token_match.end(),
+                        )
+                    )
+            result.append(
+                (
+                    special_match.group(0),
+                    special_match.start(),
+                    special_match.end(),
+                )
+            )
+            cursor = special_match.end()
+
+        if cursor < len(text):
+            segment = text[cursor:]
+            for token_match in PAT.finditer(segment):
+                result.append(
+                    (
+                        token_match.group(0),
+                        cursor + token_match.start(),
+                        cursor + token_match.end(),
+                    )
+                )
+
         return result
 
     def _merge_pretoken(self, token: str) -> list[bytes]:
@@ -169,28 +200,29 @@ class Tokenizer:
                 continue
             pending += chunk
 
-            # Keep a suffix that could be the prefix of a special token crossing
-            # chunk boundaries.
-            if max_special_len > 1:
-                protect_len = max_special_len - 1
-                if len(pending) <= protect_len:
-                    continue
-                protected_suffix = pending[-protect_len:]
-                process_text = pending[:-protect_len]
-            else:
-                protected_suffix = ""
-                process_text = pending
-
-            pre_tokens = self._pre_tokenize(process_text)
-            if not pre_tokens:
-                pending = protected_suffix
+            token_spans = self._pre_tokenize_with_spans(pending)
+            if not token_spans:
                 continue
 
-            for token in pre_tokens[:-1]:
-                yield from self._encode_token(token, special_tokens)
+            # Keep a protected suffix so partial special-token prefixes can
+            # complete across chunk boundaries.
+            protect_start = (
+                max(0, len(pending) - (max_special_len - 1))
+                if max_special_len > 1
+                else len(pending)
+            )
 
-            # Keep the final token un-emitted; it may extend with next chunk.
-            pending = pre_tokens[-1] + protected_suffix
+            first_unemitted_idx = 0
+            # Emit all tokens that are both:
+            # 1) not the final token in the current pending text, and
+            # 2) entirely before the protected suffix.
+            for idx, (token, _, end) in enumerate(token_spans[:-1]):
+                if end > protect_start:
+                    break
+                yield from self._encode_token(token, special_tokens)
+                first_unemitted_idx = idx + 1
+
+            pending = pending[token_spans[first_unemitted_idx][1] :]
 
         if pending:
             for token in self._pre_tokenize(pending):
