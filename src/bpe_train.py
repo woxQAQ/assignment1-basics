@@ -177,15 +177,20 @@ class RevPair:
     """Wrapper that reverses tuple comparison order for heap tie-breaking."""
 
     __slots__ = ("pair",)
+    pair: tuple[bytes, ...]
 
-    def __init__(self, pair):
+    def __init__(self, pair: tuple[bytes, ...]) -> None:
         self.pair = pair
 
-    def __lt__(self, other):
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, RevPair):
+            return False
         # Reverse lexical order so smaller tuples are treated as "larger" in min-heap.
         return self.pair > other.pair
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RevPair):
+            return False
         return self.pair == other.pair
 
 
