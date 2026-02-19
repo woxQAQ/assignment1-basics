@@ -121,7 +121,13 @@ class Tokenizer:
         pass
 
     def decode(self, ids: list[int]) -> str:
-        pass
+        token_bytes = bytearray()
+        for token_id in ids:
+            token = self.vocab.get(token_id)
+            if token is None:
+                raise ValueError(f"Unknown token id: {token_id}")
+            token_bytes.extend(token)
+        return bytes(token_bytes).decode("utf-8", errors="replace")
 
 
 if __name__ == "__main__":
