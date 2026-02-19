@@ -4,7 +4,6 @@ import time
 import os
 from collections import Counter, defaultdict
 from typing import BinaryIO
-import regex as re
 import multiprocessing
 from functools import partial, total_ordering
 import cProfile
@@ -114,7 +113,7 @@ def pre_tokenize_file(
                 )
             profiler.disable()
             profiler.dump_stats("pre_tokenize_main.prof")
-            print(f"Profile saved to pre_tokenize_main.prof")
+            print("Profile saved to pre_tokenize_main.prof")
         else:
             for _, start, end in indexed_ranges:
                 word_freq.update(
@@ -130,7 +129,7 @@ def pre_tokenize_file(
         )
         if profile_workers:
             # Create a queue for collecting profile file paths from workers
-            profile_queue: "multiprocessing.Queue" = multiprocessing.Queue()
+            profile_queue: multiprocessing.Queue = multiprocessing.Queue()
 
             # Use Pool with initializer to share queue with workers
             with multiprocessing.Pool(
@@ -151,7 +150,7 @@ def pre_tokenize_file(
                     import shutil
 
                     shutil.move(temp_prof_file, "pre_tokenize_worker_0.prof")
-                    print(f"Profile saved to pre_tokenize_worker_0.prof")
+                    print("Profile saved to pre_tokenize_worker_0.prof")
             except Exception as e:
                 print(f"Warning: Could not retrieve profile data: {e}")
         else:
@@ -175,12 +174,15 @@ def pre_tokenize_file(
 
 @total_ordering
 class RevPair:
+    """Wrapper that reverses tuple comparison order for heap tie-breaking."""
+
     __slots__ = ("pair",)
 
     def __init__(self, pair):
         self.pair = pair
 
     def __lt__(self, other):
+        # Reverse lexical order so smaller tuples are treated as "larger" in min-heap.
         return self.pair > other.pair
 
     def __eq__(self, other):
@@ -238,22 +240,11 @@ def bpe_train(
     merge_times = vocab_size - 256 - len(special_tokens)
 
     start = time.time()
-    # 2.1: init merge stats
-    #
-    # bp_counts are the initial byte pair counts map, we use to
-    # maintain the byte pair status during whole merge procedure
-    #
-    # bp_to_words are inverted-index that map byte pairs to words id
-    # so that we can only search the affected word after we get max byte pair
-    #
-    # words_bp_seq are the list of the [real time] byte pair sequence
-    # of words, we can get sequence by id quickly.
-    #
-    # word_freq_list are the immutable list of the frequence of words,
-    # we can get freq by id quickly
     bp_counts, bp_to_words, words_bp_sequence, word_freq_list = (
         init_bpe_merge_stats(pre_tokenize_results)
     )
+    # Max-heap (via negative count) of candidate byte pairs:
+    # entries are (-count, RevPair(pair), pair) for deterministic tie-breaking.
     heap = []
     for bp in bp_counts:
         push_pair(heap, bp_counts, bp)
@@ -353,6 +344,9 @@ def bpe_train(
 
         voc.append(merged)
         merges.append((first, second))
+        # Heap entries are lazily invalidated, so stale duplicates accumulate.
+        # Rebuild when heap grows much larger than live pair counts to keep pop fast;
+        # max(..., 1) avoids a zero threshold when bp_counts is empty.
         if len(heap) > 4 * max(len(bp_counts), 1):
             heap = []
             for bp in bp_counts:
@@ -378,6 +372,15 @@ def init_bpe_merge_stats(
     list[list[bytes]],
     list[int],
 ]:
+    """
+    Build initial data structures used throughout BPE merges.
+
+    Returns:
+        bp_counts: Byte-pair frequency map maintained across merge steps.
+        bp_to_words: Inverted index from byte pair to word IDs containing that pair.
+        words_bp_sequence: Current token sequence for each word ID (updated after merges).
+        word_freq_list: Immutable frequency list indexed by word ID.
+    """
     bp_counts: Counter[tuple[bytes, ...]] = Counter()
     bp_to_words: dict[tuple[bytes, ...], set[int]] = defaultdict(set)
     words_bp_sequence: list[list[bytes]] = []

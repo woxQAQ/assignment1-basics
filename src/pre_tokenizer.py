@@ -31,18 +31,8 @@ def pre_tokenize(
     str_counter = Counter()
     for part in parts:
         str_counter.update(PAT.findall(part))
-        # for token in PAT.finditer(part):
-        #     str_counter[token.group()] += 1
     for token_str, count in str_counter.items():
         c[_str_to_tuple(token_str)] = count
-
-    # for part in parts:
-    #     for token in PAT.finditer(part):
-    #         token_bytes = token.group()
-    #         # Use cache to avoid creating new bytes objects for each byte
-    #         c[_bytes_to_tuple(token_bytes)] += 1
-    #         # c[tuple(_SINGLE_BYTE_CACHE[b] for b in token_bytes)] += 1
-
     return c
 
 
