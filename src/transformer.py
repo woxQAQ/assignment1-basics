@@ -145,3 +145,10 @@ class RoPE(torch.nn.Module):
         cos = torch.repeat_interleave(cos, 2, -1)
         res = x * cos + self._rotate_half(x) * sin
         return res.to(xdtype)
+
+
+def softmax(in_features: torch.Tensor, dim: int) -> torch.Tensor:
+    max_val = in_features.max(dim=dim, keepdim=True).values
+    shifted = in_features - max_val
+    exp_shifted = shifted.exp()
+    return exp_shifted / exp_shifted.sum(dim=dim, keepdim=True)

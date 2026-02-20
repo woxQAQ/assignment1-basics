@@ -465,7 +465,10 @@ def run_softmax(
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+
+    from src.transformer import softmax
+
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
