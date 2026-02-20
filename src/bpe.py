@@ -77,9 +77,7 @@ class Tokenizer:
         """Split text into pre-tokens while preserving configured special tokens."""
         return [token for token, _, _ in self._pre_tokenize_with_spans(text)]
 
-    def _pre_tokenize_with_spans(
-        self, text: str
-    ) -> list[tuple[str, int, int]]:
+    def _pre_tokenize_with_spans(self, text: str) -> list[tuple[str, int, int]]:
         """Split text into pre-tokens and return (token, start, end) spans."""
         if not text:
             return []
