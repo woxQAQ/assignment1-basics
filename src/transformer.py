@@ -1,5 +1,5 @@
 from einops import einsum
-from jaxtyping import Float
+from jaxtyping import Float, Bool
 import math
 import torch
 
@@ -152,3 +152,24 @@ def softmax(in_features: torch.Tensor, dim: int) -> torch.Tensor:
     shifted = in_features - max_val
     exp_shifted = shifted.exp()
     return exp_shifted / exp_shifted.sum(dim=dim, keepdim=True)
+
+
+def attention(
+    query: Float[torch.Tensor, " ... queries d_k"],
+    key: Float[torch.Tensor, " ... keys d_k"],
+    value: Float[torch.Tensor, " ... values d_v"],
+    mask: Bool[torch.Tensor, " ... queries keys"] | None = None,
+) -> Float[torch.Tensor, " ... queries d_v"]:
+    d_k = query.shape[-1]
+    attn_out = einsum(
+        query, key, " ... queries d_k, ... keys d_k -> ... queries keys"
+    ) / math.sqrt(d_k)
+    if mask is not None:
+        attn_out = attn_out.masked_fill(mask == 0, float("-inf"))
+    attn_weight = softmax(attn_out, dim=-1)
+    out = einsum(
+        attn_weight,
+        value,
+        "... queries keys, ... keys d_v -> ... queries d_v",
+    )
+    return out
