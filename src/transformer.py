@@ -111,3 +111,37 @@ class SwiGLU(torch.nn.Module):
         self, x: Float[torch.Tensor, "... d_model"]
     ) -> Float[torch.Tensor, "... d_model"]:
         return self.w2(self.silu(self.w1(x)) * self.w3(x))
+
+
+class RoPE(torch.nn.Module):
+    def __init__(
+        self,
+        theta: float,
+        d_k: int,
+        max_seq_len: int,
+        device: torch.device | None = None,
+    ):
+        super().__init__()
+        pos = torch.arange(max_seq_len)
+        theta_ik = pos.outer(
+            1.0 / (theta ** (torch.arange(0, d_k, 2).float() / d_k))
+        )  # (... d_k)
+        self.register_buffer("cos_cache", theta_ik.cos(), persistent=False)
+        self.register_buffer("sin_cache", theta_ik.sin(), persistent=False)
+
+    def _rotate_half(self, x: torch.Tensor) -> torch.Tensor:
+        x0 = x[..., ::2]
+        x1 = x[..., 1::2]
+        return torch.stack((-x1, x0), dim=-1).flatten(-2)
+
+    def forward(
+        self, x: torch.Tensor, token_positions: torch.Tensor
+    ) -> torch.Tensor:
+        sin = self.sin_cache[token_positions].to(x.device)
+        cos = self.cos_cache[token_positions].to(x.device)
+        xdtype = x.dtype
+        x = x.float()
+        sin = torch.repeat_interleave(sin, 2, -1)
+        cos = torch.repeat_interleave(cos, 2, -1)
+        res = x * cos + self._rotate_half(x) * sin
+        return res.to(xdtype)
