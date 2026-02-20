@@ -1,3 +1,5 @@
+from einops import einsum
+from jaxtyping import Float
 import math
 import torch
 
@@ -26,8 +28,15 @@ class Linear(torch.nn.Module):
             self.weight, mean=0.0, std=sigma, a=-3 * sigma, b=3 * sigma
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x @ self.weight.T
+    def forward(
+        self, x: Float[torch.Tensor, "... d_in"]
+    ) -> Float[torch.Tensor, "... d_out"]:
+        return einsum(
+            x,
+            self.weight,
+            "batch sequence d_in, d_out d_in -> batch sequence d_out",
+        )
+        # return x @ self.weight.T
 
 
 class Embedding(torch.nn.Module):
@@ -59,8 +68,8 @@ class RMSNorm(torch.nn.Module):
         self,
         d_model: int,
         eps: float = 1e-5,
-        device=None,
-        dtype=None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
     ):
         super().__init__()
         self.eps = eps
@@ -77,3 +86,28 @@ class RMSNorm(torch.nn.Module):
         x_norm = x / rms
         output = x_norm * self.weight
         return output.to(in_dtype)
+
+
+class SiLU(torch.nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.sigmoid(x)
+
+
+class SwiGLU(torch.nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        d_ff: int | None = None,
+    ):
+        super().__init__()
+        if d_ff is None:
+            d_ff = int(round(8 / 3) * d_model / 64) * 64
+        self.w1 = Linear(d_model, d_ff)
+        self.w2 = Linear(d_ff, d_model)
+        self.w3 = Linear(d_model, d_ff)
+        self.silu = SiLU()
+
+    def forward(
+        self, x: Float[torch.Tensor, "... d_model"]
+    ) -> Float[torch.Tensor, "... d_model"]:
+        return self.w2(self.silu(self.w1(x)) * self.w3(x))
