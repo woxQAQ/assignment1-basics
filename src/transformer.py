@@ -230,14 +230,9 @@ class MutiHeadSelfAttention(torch.nn.Module):
         self.v_proj: Linear = Linear(d_model, d_model)
         self.output_proj: Linear = Linear(d_model, d_model)
         self.rope: RoPE | None = None
-        self.token_position: torch.Tensor | None = None
-        if (
-            theta is not None
-            and max_seq_len is not None
-            and token_positions is not None
-        ):
-            self.rope: RoPE = RoPE(theta, self.d_k, max_seq_len)
-            self.token_position = token_positions
+        self.token_position: torch.Tensor | None = token_positions
+        if theta is not None and max_seq_len is not None:
+            self.rope = RoPE(theta, self.d_k, max_seq_len)
 
     # TODO: merge Q,K,V to a single weight proj, so that we can reduce
     # compute amount
@@ -249,15 +244,43 @@ class MutiHeadSelfAttention(torch.nn.Module):
 
         # reverse of _split_head
         def _merge_head(_x: torch.Tensor) -> torch.Tensor:
-            return x.transpose(1, 2).contiguous().view(B, T, self.d_model)
+            return _x.transpose(1, 2).contiguous().view(B, T, self.d_model)
 
         Q = _split_head(self.q_proj.forward(x))
         K = _split_head(self.k_proj.forward(x))
         V = _split_head(self.v_proj.forward(x))
         # apply RoPE on Q and K if we can
         if self.rope is not None:
-            Q = self.rope.forward(Q, self.token_position)
-            K = self.rope.forward(K, self.token_position)
+            token_positions = self.token_position
+            if token_positions is None:
+                token_positions = torch.arange(T, device=x.device)
+            else:
+                token_positions = token_positions.to(x.device)
+            Q = self.rope.forward(Q, token_positions)
+            K = self.rope.forward(K, token_positions)
         attn_out = attention(Q, K, V, attn_mask(Q, K))
         # apply to output Linear transformation
         return self.output_proj(_merge_head(attn_out))
+
+
+class TransformerBlock(torch.nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int,
+        theta: float,
+    ):
+        super().__init__()
+        self.ln1 = RMSNorm(d_model)
+        self.ln2 = RMSNorm(d_model)
+        self.attn = MutiHeadSelfAttention(
+            d_model, num_heads, max_seq_len=max_seq_len, theta=theta
+        )
+        self.ffn = SwiGLU(d_model, d_ff)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h: torch.Tensor = self.attn(self.ln1(x)) + x
+        y = h + self.ffn(self.ln2(h))
+        return y
