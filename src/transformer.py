@@ -1,5 +1,5 @@
 from einops import einsum
-from jaxtyping import Float, Bool
+from jaxtyping import Float, Bool, Int
 import math
 import torch
 
@@ -147,7 +147,13 @@ class RoPE(torch.nn.Module):
         return res.to(xdtype)
 
 
-def softmax(in_features: torch.Tensor, dim: int) -> torch.Tensor:
+# softmax(v,i) = exp(v_i) / sum(exp(v_j),j=1...n)
+def softmax(in_features: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    # the exp must get a large value that cause overflow(be inf)
+    # cause that inf/inf = NaN
+    # notice that softmax is shift invariance, so we can add a shift on input
+    # we chose the max value of input
+    # make the softmax output values in [0,1)
     max_val = in_features.max(dim=dim, keepdim=True).values
     shifted = in_features - max_val
     exp_shifted = shifted.exp()
@@ -166,10 +172,92 @@ def attention(
     ) / math.sqrt(d_k)
     if mask is not None:
         attn_out = attn_out.masked_fill(mask == 0, float("-inf"))
-    attn_weight = softmax(attn_out, dim=-1)
+    # dim = -1 because we need to do softmax on keys dim
+    # so that every query has a sum of weight 1 on all of keys
+    attn_weight = softmax(attn_out)
     out = einsum(
         attn_weight,
         value,
         "... queries keys, ... keys d_v -> ... queries d_v",
     )
     return out
+
+
+def attn_mask(Q: torch.Tensor, K: torch.Tensor):
+    # Q: [B,H,t_q,D]
+    # K: [B,H,t_k,D]
+    # we should get a upper triangle, with shape
+    # [t_q,t_k] that mask the future token
+    # when we compute the next token
+    t_q = Q.size(-2)
+    t_k = K.size(-2)
+
+    # there are three points to be point out:
+    #
+    # 1. The True means unmask, visible for attention,
+    # so we get the reverse result
+    #
+    # 2. Diagonal=1 will exclude the main diagonal
+    #
+    # 3. In the attention function, we mask on the answer of pre-softmax proj
+    # which is a Linear transformation of Q @ K with query and key dims which
+    # are meaningful and necessary for mask.
+    # the batch and head dim we don't need to mask it
+    # so we insert two cast dimension above the answer
+    return ~torch.triu(
+        torch.ones(t_q, t_k, dtype=torch.bool, device=Q.device), diagonal=1
+    ).unsqueeze(0).unsqueeze(0)
+
+
+class MutiHeadSelfAttention(torch.nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        token_positions: Int[torch.Tensor, " ... seq_len"] | None = None,
+        max_seq_len: int | None = None,
+        theta: float | None = None,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        assert d_model % num_heads == 0
+        self.d_k = d_model // num_heads
+        self.d_v = self.d_k
+
+        self.q_proj: Linear = Linear(d_model, d_model)
+        self.k_proj: Linear = Linear(d_model, d_model)
+        self.v_proj: Linear = Linear(d_model, d_model)
+        self.output_proj: Linear = Linear(d_model, d_model)
+        self.rope: RoPE | None = None
+        self.token_position: torch.Tensor | None = None
+        if (
+            theta is not None
+            and max_seq_len is not None
+            and token_positions is not None
+        ):
+            self.rope: RoPE = RoPE(theta, self.d_k, max_seq_len)
+            self.token_position = token_positions
+
+    # TODO: merge Q,K,V to a single weight proj, so that we can reduce
+    # compute amount
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, _ = x.shape
+
+        def _split_head(_x: torch.Tensor) -> torch.Tensor:
+            return _x.view(B, T, self.num_heads, self.d_k).transpose(1, 2)
+
+        # reverse of _split_head
+        def _merge_head(_x: torch.Tensor) -> torch.Tensor:
+            return x.transpose(1, 2).contiguous().view(B, T, self.d_model)
+
+        Q = _split_head(self.q_proj.forward(x))
+        K = _split_head(self.k_proj.forward(x))
+        V = _split_head(self.v_proj.forward(x))
+        # apply RoPE on Q and K if we can
+        if self.rope is not None:
+            Q = self.rope.forward(Q, self.token_position)
+            K = self.rope.forward(K, self.token_position)
+        attn_out = attention(Q, K, V, attn_mask(Q, K))
+        # apply to output Linear transformation
+        return self.output_proj(_merge_head(attn_out))
