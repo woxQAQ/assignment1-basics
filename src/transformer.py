@@ -61,7 +61,9 @@ class Embedding(torch.nn.Module):
             self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0
         )
 
-    def forward(self, token_ids: Tensor) -> Tensor:
+    def forward(
+        self, token_ids: Int[Tensor, "..."]
+    ) -> Float[Tensor, "... d_model"]:
         return self.weight[token_ids]
 
 
@@ -81,17 +83,19 @@ class RMSNorm(torch.nn.Module):
         torch.nn.init.ones_(self.weight)
         pass
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(
+        self, x: Float[Tensor, "... d_model"]
+    ) -> Float[Tensor, "... d_model"]:
         in_dtype = x.dtype
         x = x.to(torch.float32)
-        rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
-        x_norm = x / rms
+        rms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
+        x_norm = x * rms
         output = x_norm * self.weight
         return output.to(in_dtype)
 
 
 class SiLU(torch.nn.Module):
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
         return x * sigmoid(x)
 
 
@@ -138,14 +142,20 @@ class RoPE(torch.nn.Module):
         self.register_buffer("cos_cache", theta_ik.cos(), persistent=False)
         self.register_buffer("sin_cache", theta_ik.sin(), persistent=False)
 
-    def _rotate_half(self, x: Tensor) -> Tensor:
+    def _rotate_half(
+        self, x: Float[Tensor, "... d_k"]
+    ) -> Float[Tensor, "... d_k"]:
         x0 = x[..., ::2]
         x1 = x[..., 1::2]
         return torch.stack((-x1, x0), dim=-1).flatten(-2)
 
-    def forward(self, x: Tensor, token_positions: Tensor) -> Tensor:
-        sin = self.sin_cache[token_positions].to(x.device)
-        cos = self.cos_cache[token_positions].to(x.device)
+    def forward(
+        self,
+        x: Float[Tensor, "... d_k"],
+        token_positions: Int[Tensor, "... seq_len"],
+    ) -> Float[Tensor, "... d_k"]:
+        sin = self.sin_cache[token_positions]
+        cos = self.cos_cache[token_positions]
         xdtype = x.dtype
         x = x.float()
         sin = torch.repeat_interleave(sin, 2, -1)
@@ -155,7 +165,9 @@ class RoPE(torch.nn.Module):
 
 
 # softmax(v,i) = exp(v_i) / sum(exp(v_j),j=1...n)
-def softmax(in_features: Tensor, dim: int = -1) -> Tensor:
+def softmax(
+    in_features: Float[Tensor, "..."], dim: int = -1
+) -> Float[Tensor, "..."]:
     # the exp must get a large value that cause overflow(be inf)
     # cause that inf/inf = NaN
     # notice that softmax is shift invariance, so we can add a shift on input
@@ -190,7 +202,9 @@ def attention(
     return out
 
 
-def attn_mask(Q: Tensor, K: Tensor):
+def attn_mask(
+    Q: Float[Tensor, "... queries d_k"], K: Float[Tensor, "... keys d_k"]
+) -> Bool[Tensor, "... queries keys"]:
     # Q: [B,H,t_q,D]
     # K: [B,H,t_k,D]
     # we should get a upper triangle, with shape
@@ -239,20 +253,26 @@ class MutiHeadSelfAttention(torch.nn.Module):
         self.v_proj: Linear = Linear(d_model, d_model, device, dtype)
         self.output_proj: Linear = Linear(d_model, d_model, device, dtype)
         self.rope: RoPE | None = None
-        self.token_position: Tensor | None = token_positions
+        self.token_position: Int[Tensor, "... seq_len"] | None = token_positions
         if theta is not None and max_seq_len is not None:
             self.rope = RoPE(theta, self.d_k, max_seq_len, device, dtype)
 
     # TODO: merge Q,K,V to a single weight proj, so that we can reduce
     # compute amount
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(
+        self, x: Float[Tensor, "batch seq_len d_model"]
+    ) -> Float[Tensor, "batch seq_len d_model"]:
         B, T, _ = x.shape
 
-        def _split_head(_x: Tensor) -> Tensor:
+        def _split_head(
+            _x: Float[Tensor, "batch seq_len d_model"],
+        ) -> Float[Tensor, "batch num_heads seq_len d_k"]:
             return _x.view(B, T, self.num_heads, self.d_k).transpose(1, 2)
 
         # reverse of _split_head
-        def _merge_head(_x: Tensor) -> Tensor:
+        def _merge_head(
+            _x: Float[Tensor, "batch num_heads seq_len d_k"],
+        ) -> Float[Tensor, "batch seq_len d_model"]:
             return _x.transpose(1, 2).contiguous().view(B, T, self.d_model)
 
         Q = _split_head(self.q_proj.forward(x))
@@ -296,9 +316,11 @@ class TransformerBlock(torch.nn.Module):
         )
         self.ffn = SwiGLU(d_model, d_ff, device, dtype)
 
-    def forward(self, x: Tensor) -> Tensor:
-        h: Tensor = self.attn(self.ln1(x)) + x
-        y: Tensor = h + self.ffn(self.ln2(h))
+    def forward(
+        self, x: Float[Tensor, " batch seq_len d_model"]
+    ) -> Float[Tensor, " batch seq_len d_model"]:
+        h: Float[Tensor, "batch seq_len d_model"] = self.attn(self.ln1(x)) + x
+        y: Float[Tensor, "batch seq_len d_model"] = h + self.ffn(self.ln2(h))
         return y
 
 
@@ -338,7 +360,9 @@ class Transformer(torch.nn.Module):
         self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
         self.lm_head = Linear(d_model, vocab_size, device, dtype)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(
+        self, x: Int[Tensor, " batch seq_len"]
+    ) -> Float[Tensor, " batch seq_len vocab_size"]:
         y = self.token_embeddings(x)
         for layer in self.layers:
             y = layer(y)
