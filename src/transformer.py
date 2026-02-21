@@ -115,9 +115,13 @@ class SwiGLU(torch.nn.Module):
         self.w3 = Linear(d_model, d_ff, device, dtype)
         self.silu = SiLU()
 
+    # 6BTDF
     def forward(
         self, x: Float[Tensor, "... d_model"]
     ) -> Float[Tensor, "... d_model"]:
+        # - w1: 2BTDF
+        # - w3: 2BTDF
+        # - w2: 2BTDF
         return self.w2(self.silu(self.w1(x)) * self.w3(x))
 
 
@@ -179,6 +183,7 @@ def softmax(
     return exp_shifted / exp_shifted.sum(dim=dim, keepdim=True)
 
 
+# FLOPs: 4BHT^2d_k, d_k = D/H => 4BHDT^2
 def attention(
     query: Float[Tensor, " ... queries d_k"],
     key: Float[Tensor, " ... keys d_k"],
@@ -186,6 +191,9 @@ def attention(
     mask: Bool[Tensor, " ... queries keys"] | None = None,
 ) -> Float[Tensor, " ... queries d_v"]:
     d_k = query.shape[-1]
+    # Q @ K.T
+    # (B,H,T,d_k) @ (B,H,T,d_k).T -> (B,H,T,T)
+    # => 2 * B * H * T^2 * d_k
     attn_out = einsum(
         query, key, " ... queries d_k, ... keys d_k -> ... queries keys"
     ) / math.sqrt(d_k)
@@ -194,6 +202,9 @@ def attention(
     # dim = -1 because we need to do softmax on keys dim
     # so that every query has a sum of weight 1 on all of keys
     attn_weight = softmax(attn_out)
+    # attn @ V
+    # (B,H,T,T) @ (B,H,T,d_k) -> (B,H,T,d_k)
+    # => 2 * B * H * T^2 * d_k
     out = einsum(
         attn_weight,
         value,
@@ -251,20 +262,22 @@ class MutiHeadSelfAttention(torch.nn.Module):
         # self.q_proj: Linear = Linear(d_model, d_model, device, dtype)
         # self.k_proj: Linear = Linear(d_model, d_model, device, dtype)
         # self.v_proj: Linear = Linear(d_model, d_model, device, dtype)
-        self.qkv_proj = Linear(d_model, d_model, device, dtype)
+        self.qkv_proj = Linear(d_model, d_model * 3, device, dtype)
         self.output_proj: Linear = Linear(d_model, d_model, device, dtype)
         self.rope: RoPE | None = None
         self.token_position: Int[Tensor, "... seq_len"] | None = token_positions
         if theta is not None and max_seq_len is not None:
             self.rope = RoPE(theta, self.d_k, max_seq_len, device, dtype)
 
-    # TODO: merge Q,K,V to a single weight proj, so that we can reduce
-    # compute amount
+    # 8BTD^2 + 4BDT^2
     def forward(
         self, x: Float[Tensor, "batch seq_len d_model"]
     ) -> Float[Tensor, "batch seq_len d_model"]:
         B, T, _ = x.shape
 
+        # x @ qkv_proj.T
+        # (B,T,D) @ (3D, D).T
+        # => 2 * B * T * 3D*D = 6BTD^2
         qkv: Tensor = self.qkv_proj.forward(x)
         Q, K, V = qkv.chunk(3, dim=-1)
 
@@ -291,8 +304,11 @@ class MutiHeadSelfAttention(torch.nn.Module):
                 token_positions = token_positions.to(x.device)
             Q = self.rope.forward(Q, token_positions)
             K = self.rope.forward(K, token_positions)
+        # 4BDT^2
         attn_out = attention(Q, K, V, attn_mask(Q, K))
         # apply to output Linear transformation
+        # (B,T,D) @ (D, D)
+        # => 2BTD^2
         return self.output_proj(_merge_head(attn_out))
 
 
@@ -323,7 +339,9 @@ class TransformerBlock(torch.nn.Module):
     def forward(
         self, x: Float[Tensor, " batch seq_len d_model"]
     ) -> Float[Tensor, " batch seq_len d_model"]:
+        # 8BTD^2 + 4BDT^2
         h: Float[Tensor, "batch seq_len d_model"] = self.attn(self.ln1(x)) + x
+        #
         y: Float[Tensor, "batch seq_len d_model"] = h + self.ffn(self.ln2(h))
         return y
 
@@ -368,8 +386,11 @@ class Transformer(torch.nn.Module):
         self, x: Int[Tensor, " batch seq_len"]
     ) -> Float[Tensor, " batch seq_len vocab_size"]:
         y = self.token_embeddings(x)
+        # L(8BTD^2 + 4BDT^2 + 6BTDF)
         for layer in self.layers:
             y = layer(y)
         y = self.ln_final(y)
+        # [B,T,D] @ [D,V
+        # 2BTDV
         y = self.lm_head(y)
         return y
