@@ -285,5 +285,42 @@ class TransformerBlock(torch.nn.Module):
         return y
 
 
-class Model:
-    pass
+class Transformer(torch.nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        num_layers: int,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int | None = None,
+        theta: float = 10000.0,
+    ):
+        super().__init__()
+        if max_seq_len is None:
+            max_seq_len = context_length
+
+        self.layers = torch.nn.ModuleList(
+            [
+                TransformerBlock(
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    d_ff=d_ff,
+                    max_seq_len=max_seq_len,
+                    theta=theta,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.token_embeddings = Embedding(vocab_size, d_model)
+        self.ln_final = RMSNorm(d_model)
+        self.lm_head = Linear(d_model, vocab_size)
+
+    def forward(self, x: Tensor) -> Tensor:
+        y = self.token_embeddings(x)
+        for layer in self.layers:
+            y = layer(y)
+        y = self.ln_final(y)
+        y = self.lm_head(y)
+        return y
