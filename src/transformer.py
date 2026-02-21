@@ -248,9 +248,10 @@ class MutiHeadSelfAttention(torch.nn.Module):
         self.d_k = d_model // num_heads
         self.d_v = self.d_k
 
-        self.q_proj: Linear = Linear(d_model, d_model, device, dtype)
-        self.k_proj: Linear = Linear(d_model, d_model, device, dtype)
-        self.v_proj: Linear = Linear(d_model, d_model, device, dtype)
+        # self.q_proj: Linear = Linear(d_model, d_model, device, dtype)
+        # self.k_proj: Linear = Linear(d_model, d_model, device, dtype)
+        # self.v_proj: Linear = Linear(d_model, d_model, device, dtype)
+        self.qkv_proj = Linear(d_model, d_model, device, dtype)
         self.output_proj: Linear = Linear(d_model, d_model, device, dtype)
         self.rope: RoPE | None = None
         self.token_position: Int[Tensor, "... seq_len"] | None = token_positions
@@ -264,6 +265,9 @@ class MutiHeadSelfAttention(torch.nn.Module):
     ) -> Float[Tensor, "batch seq_len d_model"]:
         B, T, _ = x.shape
 
+        qkv: Tensor = self.qkv_proj.forward(x)
+        Q, K, V = qkv.chunk(3, dim=-1)
+
         def _split_head(
             _x: Float[Tensor, "batch seq_len d_model"],
         ) -> Float[Tensor, "batch num_heads seq_len d_k"]:
@@ -275,9 +279,9 @@ class MutiHeadSelfAttention(torch.nn.Module):
         ) -> Float[Tensor, "batch seq_len d_model"]:
             return _x.transpose(1, 2).contiguous().view(B, T, self.d_model)
 
-        Q = _split_head(self.q_proj.forward(x))
-        K = _split_head(self.k_proj.forward(x))
-        V = _split_head(self.v_proj.forward(x))
+        Q = _split_head(Q)
+        K = _split_head(K)
+        V = _split_head(V)
         # apply RoPE on Q and K if we can
         if self.rope is not None:
             token_positions = self.token_position
