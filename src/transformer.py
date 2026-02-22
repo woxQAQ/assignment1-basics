@@ -1,3 +1,5 @@
+from typing import Any
+from collections.abc import Iterable, Callable
 from einops import einsum
 from jaxtyping import Float, Bool, Int
 import math
@@ -408,3 +410,56 @@ def cross_entropy(
     result = logits.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
     loss = log_sum_exp - result
     return loss.mean()
+
+
+def perplexity(loss: Tensor):
+    return torch.exp(loss)
+
+
+class AdamW(torch.optim.Optimizer):
+    def __init__(
+        self,
+        params: Iterable[Tensor]
+        | Iterable[dict[str, Any]]
+        | Iterable[dict[str, Tensor]]
+        | None,
+        lr: float | None = 1e-3,
+        betas: tuple[float, float] | None = (0.9, 0.999),
+        weight_decay: float | None = 0.01,
+        eps: float | None = 1e-8,
+    ):
+        defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay, eps=eps)
+
+        super().__init__(
+            params if params is not None else [],
+            defaults,
+        )
+
+    @torch.no_grad()
+    def step(self, closure: Callable | None = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            beta1, beta2 = group["betas"]
+            lr = group["lr"]
+            weight_decay = group["weight_decay"]
+            eps = group["eps"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]
+                grad = p.grad.data
+                if len(state) == 0:
+                    state["step"] = 0
+                    state["m"] = torch.zeros_like(p)
+                    state["v"] = torch.zeros_like(p)
+                m = state["m"]
+                v = state["v"]
+                state["step"] += 1
+                t = state["step"]
+                m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                alpha_t = lr * ((1 - beta2**t) ** 0.5) / (1 - beta1**t)
+                p.addcdiv_(m, v.sqrt().add_(eps), value=-alpha_t)
+                if weight_decay > 0:
+                    p.add_(p, alpha=-lr * weight_decay)
+        return loss
