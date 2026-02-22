@@ -394,3 +394,17 @@ class Transformer(torch.nn.Module):
         # 2BTDV
         y = self.lm_head(y)
         return y
+
+
+def cross_entropy(
+    logits: Float[Tensor, " batch_size vocab_size"],
+    targets: Int[Tensor, " batch_size"],
+) -> Float[Tensor, ""]:
+    max_logits = logits.max(dim=-1, keepdim=True).values
+    shifted = logits - max_logits
+    log_sum_exp = torch.log(
+        torch.sum(torch.exp(shifted), dim=-1)
+    ) + max_logits.squeeze(-1)
+    result = logits.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+    loss = log_sum_exp - result
+    return loss.mean()
